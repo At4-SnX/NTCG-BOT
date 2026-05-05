@@ -1,288 +1,448 @@
-// ===============================
-// NTCG BANK BOT — ONE FILE VERSION
-// ===============================
-
-const { 
-  Client, 
-  GatewayIntentBits, 
-  Partials, 
-  Collection, 
-  REST, 
-  Routes 
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  EmbedBuilder
 } = require("discord.js");
 const fs = require("fs");
-require("dotenv").config();
 
-// ===============================
+// ============================
 // CONFIG
-// ===============================
+// ============================
+const TOKEN = process.env.TOKEN;
 
-// REMPLACE PAR TES IDS
+// Rôles autorisés
 const ROLE_BANK = "1500319763157487778";
-const ROLE_DIRECTION = "1500305660108341389";
-const CHANNEL_ARRIVEES = "1500453829412388984";
-const CHANNEL_DEPARTS = "1500453962795712582";
+const ROLE_BIJOUTERIE = "1501255703384559679";
+const ROLE_TRANSPORT = "1500319754815012936";
 
-// ===============================
-// BASE DE DONNÉES JSON
-// ===============================
+// ============================
+// CARTES NTCG (6 types)
+// ============================
+const CARD_IMAGES = {
+  DIAMOND: "https://copilot.microsoft.com/th/id/BCO.388d0723-b9a4-4c7a-854b-59dfcb16ecfc.png",
+  BLACK: "https://copilot.microsoft.com/th/id/BCO.5c8f0371-eb82-4d34-9bcb-1f68f4220ddb.png",
+  GOLD: "https://copilot.microsoft.com/th/id/BCO.443427c9-2501-406f-a210-2051c37ace66.png",
+  PREMIUM: "https://copilot.microsoft.com/th/id/BCO.3603fe52-b67e-4e81-bec3-17079e036349.png",
+  STANDARD: "https://copilot.microsoft.com/th/id/BCO.89fb572a-1972-4003-897a-1cbac0105533.png",
+  BASIC: "https://copilot.microsoft.com/th/id/BCO.f70d2e18-42bb-4a88-8692-03f8ab4533cf.png"
+};
 
-if (!fs.existsSync("./accounts.json")) fs.writeFileSync("./accounts.json", "{}");
-if (!fs.existsSync("./revenues.json")) fs.writeFileSync("./revenues.json", "{}");
+const CARD_TYPES = Object.keys(CARD_IMAGES);
 
-let accounts = require("./accounts.json");
-let revenues = require("./revenues.json");
+// ============================
+// CLIENT
+// ============================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers
+  ],
+  partials: [Partials.GuildMember, Partials.User]
+});
 
-// ===============================
-// FONCTIONS BANCAIRES
-// ===============================
+// ============================
+// DATA (accounts + revenues)
+// ============================
+let accounts = {};
+let revenues = {};
 
-function generateCardNumber() {
-  return Array(4).fill(0).map(() =>
-    Math.floor(1000 + Math.random() * 9000)
-  ).join(" ");
+// Chargement des comptes
+try {
+  accounts = JSON.parse(fs.readFileSync("./accounts.json", "utf8"));
+} catch {
+  accounts = {};
 }
 
-function generateCVV() {
-  return Math.floor(100 + Math.random() * 900).toString();
+// Chargement des revenus
+try {
+  revenues = JSON.parse(fs.readFileSync("./revenues.json", "utf8"));
+} catch {
+  revenues = {
+    totals: {
+      BANK: 0,
+      BIJOUTERIE: 0,
+      TRANSPORT: 0
+    },
+    history: []
+  };
 }
 
-function generateValidThru() {
-  const year = 26 + Math.floor(Math.random() * 5);
-  const month = ("0" + Math.floor(1 + Math.random() * 11)).slice(-2);
-  return `${month}/${year}`;
-}
-
+// Sauvegarde des comptes
 function saveAccounts() {
   fs.writeFileSync("./accounts.json", JSON.stringify(accounts, null, 2));
 }
 
+// Sauvegarde des revenus
 function saveRevenues() {
   fs.writeFileSync("./revenues.json", JSON.stringify(revenues, null, 2));
 }
 
-// ===============================
-// CLIENT DISCORD
-// ===============================
+// ============================
+// STYLE EMBEDS (Style A Cyber Blue Premium)
+// ============================
+function baseEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x3498db) // Bleu premium
+    .setFooter({ text: "NTCG Bank • Système bancaire RP" })
+    .setTimestamp();
+}
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages
-  ],
-  partials: [Partials.User, Partials.GuildMember]
-});
+// ============================
+// GÉNÉRATION DES CARTES
+// ============================
 
-// ===============================
+// Numéro de carte (commence par 4, 16 chiffres)
+function generateCardNumber() {
+  return "4" + Array.from({ length: 15 }, () => Math.floor(Math.random() * 10)).join("");
+}
+
+// CVV (3 chiffres)
+function generateCVV() {
+  return String(Math.floor(100 + Math.random() * 900));
+}
+
+// Validité (MM/YY) +3 ans
+function generateValidThru() {
+  const now = new Date();
+  const year = now.getFullYear() + 3;
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${month}/${String(year).slice(-2)}`;
+}
+
+// ============================
 // SLASH COMMANDS
-// ===============================
-
+// ============================
 const commands = [
   {
     name: "create-account",
-    description: "Créer un compte bancaire RP",
+    description: "Créer un compte bancaire (1 seul par joueur)",
     options: [
       {
         name: "user",
-        description: "Utilisateur",
-        type: 6,
+        description: "Joueur cible",
+        type: 6, // USER
         required: true
       },
       {
         name: "type",
-        description: "Type de carte",
-        type: 3,
+        description: "Type de carte NTCG",
+        type: 3, // STRING
         required: true,
-        choices: [
-          { name: "Cheap", value: "CHEAP" },
-          { name: "Standard", value: "STANDARD" },
-          { name: "Premium", value: "PREMIUM" },
-          { name: "Gold", value: "GOLD" },
-          { name: "Black", value: "BLACK" },
-          { name: "Diamond VIP", value: "DIAMOND_VIP" }
-        ]
+        choices: CARD_TYPES.map(t => ({ name: t, value: t }))
       }
     ]
   },
+
   {
-    name: "view-card",
-    description: "Voir la carte bancaire d'un utilisateur",
+    name: "account",
+    description: "Voir une carte bancaire",
     options: [
       {
         name: "user",
-        description: "Utilisateur",
+        description: "Joueur cible (laisser vide pour soi-même)",
         type: 6,
-        required: true
+        required: false
       }
     ]
   },
+
   {
     name: "add-revenue",
-    description: "Ajouter un revenu à l'entreprise",
+    description: "Ajouter un revenu à un secteur",
     options: [
       {
+        name: "sector",
+        description: "Secteur concerné",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "BANK", value: "BANK" },
+          { name: "BIJOUTERIE", value: "BIJOUTERIE" },
+          { name: "TRANSPORT", value: "TRANSPORT" }
+        ]
+      },
+      {
         name: "amount",
-        description: "Montant",
-        type: 4,
+        description: "Montant du revenu",
+        type: 4, // INTEGER
         required: true
       },
       {
-        name: "source",
-        description: "Source du revenu",
+        name: "reason",
+        description: "Raison du revenu",
         type: 3,
-        required: true
+        required: false
       }
     ]
+  },
+
+  {
+    name: "revenue-history",
+    description: "Voir l'historique des revenus"
+  },
+
+  {
+    name: "bank-stats",
+    description: "Voir les statistiques globales des revenus"
   }
 ];
 
-// ===============================
-// DEPLOIEMENT DES COMMANDES
-// ===============================
-
+// ============================
+// READY + ENREGISTREMENT DES COMMANDES
+// ============================
 client.once("ready", async () => {
   console.log(`Connecté en tant que ${client.user.tag}`);
 
-  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-  await rest.put(
-    Routes.applicationCommands(client.user.id),
-    { body: commands }
-  );
+  try {
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
 
-  console.log("Slash commands enregistrées.");
+    console.log("Slash commands enregistrées.");
+  } catch (error) {
+    console.error("Erreur lors de l'enregistrement des commandes :", error);
+  }
 });
-
-// ===============================
-// ARRIVÉES / DÉPARTS
-// ===============================
-
-client.on("guildMemberAdd", member => {
-  const ch = member.guild.channels.cache.get(CHANNEL_ARRIVEES);
-  if (ch) ch.send(`📥 **Arrivée :** ${member.user.tag}`);
-});
-
-client.on("guildMemberRemove", member => {
-  const ch = member.guild.channels.cache.get(CHANNEL_DEPARTS);
-  if (ch) ch.send(`📤 **Départ :** ${member.user.tag}`);
-});
-
-// ===============================
-// GESTION DES COMMANDES
-// ===============================
-
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
 
 // ============================
-// /create-account
+// PERMISSIONS HELPERS
 // ============================
 
-if (interaction.commandName === "create-account") {
-  const target = interaction.options.getUser("user");
-  const type = interaction.options.getString("type");
-
-  // Récupération sécurisée du membre staff
-  const staff = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-
-  if (!staff || !staff.roles || !staff.roles.cache) {
-    return interaction.reply({
-      content: "Impossible de vérifier tes permissions.",
-      ephemeral: true
-    });
-  }
-
-  // Vérification des rôles
-  if (!staff.roles.cache.has(ROLE_BANK) && !staff.roles.cache.has(ROLE_DIRECTION)) {
-    return interaction.reply({
-      content: "Tu n'as pas la permission.",
-      ephemeral: true
-    });
-  }
-
-  // Récupération du membre cible
-  const member = await interaction.guild.members.fetch(target.id);
-  const joinDays = (Date.now() - member.joinedAt) / (1000 * 60 * 60 * 24);
-
-  if (type !== "DIAMOND_VIP" && joinDays < 7) {
-    return interaction.reply({
-      content: "Le joueur n'a pas 7 jours d'ancienneté.",
-      ephemeral: true
-    });
-  }
-
-  const card = {
-    number: generateCardNumber(),
-    cvv: generateCVV(),
-    valid: generateValidThru(),
-    type
-  };
-
-  accounts[target.id] = {
-    userId: target.id,
-    createdAt: Date.now(),
-    card
-  };
-
-  saveAccounts();
-
-  return interaction.reply({
-    content:
-      `Compte créé pour **${target.username}**.\n` +
-      `Type : **${type}**\n` +
-      `Numéro : **${card.number}**\n` +
-      `CVV : **${card.cvv}**\n` +
-      `Validité : **${card.valid}**`,
-    ephemeral: true
-  });
+// Récupère le membre Discord (sécurisé)
+async function getMember(interaction) {
+  return interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 }
 
-  // ============================
-  // /view-card
-  // ============================
-  if (interaction.commandName === "view-card") {
-    const target = interaction.options.getUser("user");
+// Vérifie si l'utilisateur peut gérer les revenus
+function canManageRevenues(member) {
+  return (
+    member.roles.cache.has(ROLE_BANK) ||
+    member.roles.cache.has(ROLE_BIJOUTERIE) ||
+    member.roles.cache.has(ROLE_TRANSPORT)
+  );
+}
 
-    const data = accounts[target.id];
-    if (!data) return interaction.reply({ content: "Aucun compte trouvé.", ephemeral: true });
+// Vérifie si l'utilisateur est un banquier (création de comptes)
+function isBankStaff(member) {
+  return member.roles.cache.has(ROLE_BANK);
+}
 
-    return interaction.reply({
-      content:
-        `**Carte de ${target.username}**\n` +
-        `Type : ${data.card.type}\n` +
-        `Numéro : ${data.card.number}\n` +
-        `CVV : ${data.card.cvv}\n` +
-        `Validité : ${data.card.valid}`,
-      ephemeral: true
-    });
-  }
+// ============================
+// INTERACTIONS (COMMANDES)
+// ============================
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  // ============================
-  // /add-revenue
-  // ============================
-  if (interaction.commandName === "add-revenue") {
-    const amount = interaction.options.getInteger("amount");
-    const source = interaction.options.getString("source");
+  try {
 
-    const month = new Date().toISOString().slice(0, 7);
+    // ============================
+    // /create-account
+    // ============================
+    if (interaction.commandName === "create-account") {
+      const target = interaction.options.getUser("user");
+      const type = interaction.options.getString("type");
 
-    if (!revenues[month]) revenues[month] = { total: 0, details: [] };
+      const staff = await getMember(interaction);
+      if (!staff || !isBankStaff(staff)) {
+        return interaction.reply({
+          content: "Tu n'as pas la permission de créer des comptes.",
+          ephemeral: true
+        });
+      }
 
-    revenues[month].total += amount;
-    revenues[month].details.push({ source, amount });
+      // Un seul compte par joueur
+      if (accounts[target.id]) {
+        return interaction.reply({
+          content: "Ce joueur possède déjà un compte bancaire.",
+          ephemeral: true
+        });
+      }
 
-    saveRevenues();
+      // Création de la carte
+      const card = {
+        type,
+        number: generateCardNumber(),
+        cvv: generateCVV(),
+        valid: generateValidThru()
+      };
 
-    return interaction.reply({
-      content: `Revenu ajouté : **${amount}€** (${source})`,
-      ephemeral: true
-    });
+      accounts[target.id] = {
+        userId: target.id,
+        createdAt: Date.now(),
+        card
+      };
+
+      saveAccounts();
+
+      const embed = baseEmbed()
+        .setTitle("💳 Compte bancaire créé")
+        .setDescription(`Un compte vient d'être créé pour **${target.tag}**`)
+        .addFields(
+          { name: "Type", value: type, inline: true },
+          { name: "Numéro", value: card.number, inline: false },
+          { name: "CVV", value: card.cvv, inline: true },
+          { name: "Validité", value: card.valid, inline: true }
+        )
+        .setThumbnail(CARD_IMAGES[type]);
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    // ============================
+    // /account
+    // ============================
+    if (interaction.commandName === "account") {
+      const target = interaction.options.getUser("user") || interaction.user;
+
+      const data = accounts[target.id];
+      if (!data) {
+        return interaction.reply({
+          content: "Ce joueur n'a pas de compte bancaire.",
+          ephemeral: true
+        });
+      }
+
+      const card = data.card;
+
+      const embed = baseEmbed()
+        .setTitle("💳 Carte bancaire")
+        .setDescription(`Carte de **${target.tag}**`)
+        .addFields(
+          { name: "Type", value: card.type, inline: true },
+          { name: "Numéro", value: card.number, inline: false },
+          { name: "CVV", value: card.cvv, inline: true },
+          { name: "Validité", value: card.valid, inline: true }
+        )
+        .setThumbnail(CARD_IMAGES[card.type]);
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    // ============================
+    // /add-revenue
+    // ============================
+    if (interaction.commandName === "add-revenue") {
+      const sector = interaction.options.getString("sector");
+      const amount = interaction.options.getInteger("amount");
+      const reason = interaction.options.getString("reason") || "Aucune raison spécifiée.";
+
+      const staff = await getMember(interaction);
+      if (!staff || !canManageRevenues(staff)) {
+        return interaction.reply({
+          content: "Tu n'as pas la permission d'ajouter des revenus.",
+          ephemeral: true
+        });
+      }
+
+      revenues.totals[sector] += amount;
+
+      revenues.history.push({
+        sector,
+        amount,
+        reason,
+        by: staff.id,
+        timestamp: Date.now()
+      });
+
+      saveRevenues();
+
+      const embed = baseEmbed()
+        .setTitle("📈 Revenu ajouté")
+        .addFields(
+          { name: "Secteur", value: sector, inline: true },
+          { name: "Montant", value: String(amount), inline: true },
+          { name: "Total secteur", value: String(revenues.totals[sector]), inline: true },
+          { name: "Raison", value: reason, inline: false },
+          { name: "Ajouté par", value: `<@${staff.id}>`, inline: false }
+        );
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    // ============================
+    // /revenue-history
+    // ============================
+    if (interaction.commandName === "revenue-history") {
+      const staff = await getMember(interaction);
+      if (!staff || !canManageRevenues(staff)) {
+        return interaction.reply({
+          content: "Tu n'as pas la permission de voir l'historique.",
+          ephemeral: true
+        });
+      }
+
+      const list = revenues.history.slice().reverse().slice(0, 10);
+
+      if (list.length === 0) {
+        return interaction.reply({
+          content: "Aucun revenu enregistré.",
+          ephemeral: true
+        });
+      }
+
+      let table = "```Secteur      | Montant | Par        | Date\n";
+      table += "-------------+---------+-----------+----------------\n";
+
+      for (const r of list) {
+        const date = new Date(r.timestamp).toLocaleString("fr-FR");
+        table += `${r.sector.padEnd(12)}| ${String(r.amount).padEnd(7)}| ${r.by.padEnd(10)}| ${date}\n`;
+      }
+
+      table += "```";
+
+      const embed = baseEmbed()
+        .setTitle("📊 Historique des revenus")
+        .setDescription(table);
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    // ============================
+    // /bank-stats
+    // ============================
+    if (interaction.commandName === "bank-stats") {
+      const staff = await getMember(interaction);
+      if (!staff || !canManageRevenues(staff)) {
+        return interaction.reply({
+          content: "Tu n'as pas la permission de voir les statistiques.",
+          ephemeral: true
+        });
+      }
+
+      const t = revenues.totals;
+      const total = t.BANK + t.BIJOUTERIE + t.TRANSPORT;
+
+      const embed = baseEmbed()
+        .setTitle("🏦 Statistiques NTCG")
+        .addFields(
+          { name: "BANK", value: String(t.BANK), inline: true },
+          { name: "BIJOUTERIE", value: String(t.BIJOUTERIE), inline: true },
+          { name: "TRANSPORT", value: String(t.TRANSPORT), inline: true },
+          { name: "TOTAL GLOBAL", value: String(total), inline: false }
+        );
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+  } catch (err) {
+    console.error("Erreur interaction :", err);
+    if (!interaction.replied) {
+      interaction.reply({
+        content: "Une erreur interne est survenue.",
+        ephemeral: true
+      });
+    }
   }
 });
 
-// ===============================
-// LOGIN
-// ===============================
+// ============================
+// LOGIN DU BOT
+// ============================
+client.login(TOKEN);
 
-client.login(process.env.TOKEN);
