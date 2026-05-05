@@ -18,10 +18,10 @@ require("dotenv").config();
 // ===============================
 
 // REMPLACE PAR TES IDS
-const ROLE_BANK = process.env.ROLE_BANK;
-const ROLE_DIRECTION = process.env.ROLE_DIRECTION;
-const CHANNEL_ARRIVEES = process.env.CHANNEL_ARRIVEES;
-const CHANNEL_DEPARTS = process.env.CHANNEL_DEPARTS;
+const ROLE_BANK = "1500319763157487778";
+const ROLE_DIRECTION = "1500305660108341389";
+const CHANNEL_ARRIVEES = "1500453829412388984";
+const CHANNEL_DEPARTS = "1500453962795712582";
 
 // ===============================
 // BASE DE DONNÉES JSON
@@ -175,48 +175,68 @@ client.on("guildMemberRemove", member => {
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // ============================
-  // /create-account
-  // ============================
-  if (interaction.commandName === "create-account") {
-    const staff = interaction.member;
-    const target = interaction.options.getUser("user");
-    const type = interaction.options.getString("type");
+// ============================
+// /create-account
+// ============================
 
-    if (!staff.roles.cache.has(ROLE_BANK) && !staff.roles.cache.has(ROLE_DIRECTION))
-      return interaction.reply({ content: "Tu n'as pas la permission.", ephemeral: true });
+if (interaction.commandName === "create-account") {
+  const target = interaction.options.getUser("user");
+  const type = interaction.options.getString("type");
 
-    const member = await interaction.guild.members.fetch(target.id);
-    const joinDays = (Date.now() - member.joinedAt) / (1000 * 60 * 60 * 24);
+  // Récupération sécurisée du membre staff
+  const staff = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
-    if (type !== "DIAMOND_VIP" && joinDays < 7)
-      return interaction.reply({ content: "Le joueur n'a pas 7 jours d'ancienneté.", ephemeral: true });
-
-    const card = {
-      number: generateCardNumber(),
-      cvv: generateCVV(),
-      valid: generateValidThru(),
-      type
-    };
-
-    accounts[target.id] = {
-      userId: target.id,
-      createdAt: Date.now(),
-      card
-    };
-
-    saveAccounts();
-
+  if (!staff || !staff.roles || !staff.roles.cache) {
     return interaction.reply({
-      content:
-        `Compte créé pour **${target.username}**.\n` +
-        `Type : **${type}**\n` +
-        `Numéro : **${card.number}**\n` +
-        `CVV : **${card.cvv}**\n` +
-        `Validité : **${card.valid}**`,
+      content: "Impossible de vérifier tes permissions.",
       ephemeral: true
     });
   }
+
+  // Vérification des rôles
+  if (!staff.roles.cache.has(ROLE_BANK) && !staff.roles.cache.has(ROLE_DIRECTION)) {
+    return interaction.reply({
+      content: "Tu n'as pas la permission.",
+      ephemeral: true
+    });
+  }
+
+  // Récupération du membre cible
+  const member = await interaction.guild.members.fetch(target.id);
+  const joinDays = (Date.now() - member.joinedAt) / (1000 * 60 * 60 * 24);
+
+  if (type !== "DIAMOND_VIP" && joinDays < 7) {
+    return interaction.reply({
+      content: "Le joueur n'a pas 7 jours d'ancienneté.",
+      ephemeral: true
+    });
+  }
+
+  const card = {
+    number: generateCardNumber(),
+    cvv: generateCVV(),
+    valid: generateValidThru(),
+    type
+  };
+
+  accounts[target.id] = {
+    userId: target.id,
+    createdAt: Date.now(),
+    card
+  };
+
+  saveAccounts();
+
+  return interaction.reply({
+    content:
+      `Compte créé pour **${target.username}**.\n` +
+      `Type : **${type}**\n` +
+      `Numéro : **${card.number}**\n` +
+      `CVV : **${card.cvv}**\n` +
+      `Validité : **${card.valid}**`,
+    ephemeral: true
+  });
+}
 
   // ============================
   // /view-card
